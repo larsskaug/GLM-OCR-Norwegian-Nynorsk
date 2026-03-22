@@ -87,30 +87,13 @@ def get_long_article() -> tuple[str, str]:
 
 # --- 3. TEMPLATE GENERATOR ---
 def generate_newspaper_page() -> tuple[str, str]:
-    """Generates randomized HTML and the exact reading-order ground truth.
-
-    Ground truth note: CSS `hyphens: auto` causes the browser to visually break
-    long Norwegian compound words with a soft hyphen. The ground truth intentionally
-    contains the un-hyphenated words because this dataset trains semantic content
-    extraction (what does the article say?), not pixel-level glyph transcription.
-    If you later need exact glyph-level OCR, remove `hyphens: auto` from h2 styling.
-
-    Content length is controlled by GT_CHAR_TARGET: articles are added in a loop
-    until the ground-truth string reaches the target length. At 1600×2400 the
-    image costs ~4 900 tokens, leaving ~3 300 for text within the 8 192 cutoff.
-    """
     body_font = random.choice(BODY_FONTS)
     headline_font = random.choice(HEADLINE_FONTS)
-    col_count = 6
+    col_count = 3
 
-    # --- Per-page visual style (aged-paper look) ---
-    # Warm cream background, slightly variable per page
-    bg_hue = random.randint(38, 52)
-    bg_sat = random.randint(5, 14)
-    bg_light = random.randint(86, 94)
-    bg_color = f"hsl({bg_hue}, {bg_sat}%, {bg_light}%)"
+    bg_light = random.randint(88, 96)
+    bg_color = f"hsl(0, 0%, {bg_light}%)"
 
-    # Faded ink — dark gray rather than pure black
     ink_lightness = random.randint(8, 22)
     ink_color = f"hsl(0, 0%, {ink_lightness}%)"
 
@@ -119,22 +102,22 @@ def generate_newspaper_page() -> tuple[str, str]:
     ground_truth: list[str] = []
     html_parts: list[str] = []
 
-    masthead = "Norsk Tidende"
-    html_parts.append(
-        f"<h1 style='text-align: center; border-bottom: 2px solid {ink_color}; "
-        f"padding-bottom: 10px; font-family: {headline_font}; text-transform: uppercase; "
-        f"font-size: 28px; letter-spacing: 2px;'>"
-        f"{masthead}</h1>"
-    )
-    ground_truth.append(masthead)
+    # Optional Masthead: Simulates the difference between a top quadrant and a bottom quadrant
+    if random.random() < 0.35:
+        masthead = "Norsk Tidende"
+        html_parts.append(
+            f"<h1 style='text-align: center; border-bottom: 2px solid {ink_color}; "
+            f"padding-bottom: 10px; font-family: {headline_font}; text-transform: uppercase; "
+            f"font-size: 28px; letter-spacing: 2px; margin-top: 0;'>"
+            f"{masthead}</h1>"
+        )
+        ground_truth.append(masthead)
 
     html_parts.append(f"<div class='newspaper-layout' style='column-count: {col_count};'>")
 
-    # --- Budget-based article filling ---
-    # Alternate between long and short articles; stop when GT reaches target length.
     target_chars = GT_CHAR_TARGET + random.randint(-GT_CHAR_JITTER, GT_CHAR_JITTER)
     gt_chars = sum(len(s) for s in ground_truth)
-    long_prob = 0.20   # 20% chance any slot gets a long article
+    long_prob = 0.20
 
     while gt_chars < target_chars:
         if random.random() < long_prob:
@@ -165,11 +148,18 @@ def generate_newspaper_page() -> tuple[str, str]:
 
     html_parts.append("</div>")
 
+    # CSS Changes: Width set to 1200px (half of 2400px). Margins/Padding tightened.
     html_content = f"""
     <html lang="nn">
     <head>
     <style>
-        body {{ width: 1540px; min-height: 2340px; background: {bg_color}; padding: 30px; color: {ink_color}; }}
+        body {{ 
+            width: 1200px; 
+            background: {bg_color}; 
+            padding: 12px; 
+            margin: 0; 
+            color: {ink_color}; 
+        }}
         .newspaper-layout {{
             column-gap: 16px;
             column-rule: 1px solid #888;
@@ -186,6 +176,9 @@ def generate_newspaper_page() -> tuple[str, str]:
     """
 
     return html_content, "\n\n".join(ground_truth)
+
+
+
 
 
 # --- 4. DEGRADATION ENGINE ---
@@ -226,23 +219,23 @@ def degrade_image(img: np.ndarray) -> np.ndarray:
     # 1. Grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
 
-    # 2. Paper grain — coarse texture, intensity 3–10
-    grain_intensity = random.uniform(3.0, 10.0)
+    # 2. Paper grain — subtle low-frequency texture, intensity 1–4
+    grain_intensity = random.uniform(1.0, 4.0)
     grain_scale = random.choice([3, 4, 5])
     gray += _paper_grain(gray.shape, scale=grain_scale) * grain_intensity
 
-    # 3. Pixel-level noise — simulates scanner sensor noise, intensity 4–14
-    noise_intensity = random.uniform(4.0, 14.0)
+    # 3. Pixel-level noise — light scanner noise, intensity 1–5
+    noise_intensity = random.uniform(1.0, 5.0)
     gray += np.random.normal(0, noise_intensity, gray.shape).astype(np.float32)
 
-    # 4. Gaussian blur — softens character edges; σ 0.5–1.4
-    sigma = random.uniform(0.5, 1.4)
-    ksize = 3 if sigma < 1.0 else 5
+    # 4. Gaussian blur — very slight softening; σ 0.2–0.5
+    sigma = random.uniform(0.2, 0.5)
+    ksize = 3
     gray = cv2.GaussianBlur(gray, (ksize, ksize), sigma)
 
-    # 5. Vignette — darken toward corners, strength 0.05–0.20
-    if random.random() > 0.3:
-        v_strength = random.uniform(0.05, 0.20)
+    # 5. Vignette — subtle edge darkening, strength 0.02–0.08
+    if random.random() > 0.5:
+        v_strength = random.uniform(0.02, 0.08)
         gray *= _vignette(gray.shape, v_strength)
 
     gray = np.clip(gray, 0, 255).astype(np.uint8)
@@ -252,14 +245,7 @@ def degrade_image(img: np.ndarray) -> np.ndarray:
 # --- 5. WORKER ---
 PAGE_RECYCLE_INTERVAL = 500
 
-
 def _worker(worker_id: int, indices: list[int], output_dir: str, images_dir: str, seed: int | None, dataset_name: str = "glm_ocr_nynorsk") -> None:
-    """Runs in a forked child process. Generates samples for the given indices.
-
-    Writes results to a partial JSON file; the main process merges these.
-    The corpus globals (articles, long_article_pool) are inherited via fork CoW.
-    Each worker gets a distinct RNG seed so outputs are not identical across workers.
-    """
     if seed is not None:
         worker_seed = seed + worker_id * 997
         random.seed(worker_seed)
@@ -271,7 +257,8 @@ def _worker(worker_id: int, indices: list[int], output_dir: str, images_dir: str
         browser = p.chromium.launch()
 
         def new_page():
-            return browser.new_page(viewport={"width": 1600, "height": 2400})
+            # Set a smaller initial height so scrollHeight isn't artificially inflated
+            return browser.new_page(viewport={"width": 1200, "height": 800})
 
         page = new_page()
 
@@ -286,13 +273,16 @@ def _worker(worker_id: int, indices: list[int], output_dir: str, images_dir: str
             html, gt_text = generate_newspaper_page()
             page.set_content(html)
 
-            screenshot_bytes = page.screenshot(full_page=True)
+            # THE FIX: Tell Playwright to screenshot the body element directly.
+            # This perfectly wraps the exact dimensions of the text block, 
+            # cutting off the blank background but keeping every character intact.
+            screenshot_bytes = page.locator("body").screenshot()
+            
             img_array = np.frombuffer(screenshot_bytes, dtype=np.uint8)
             img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
             img = degrade_image(img)
 
-            # Lower quality floor to introduce compression artifacts typical of re-saved scans
-            quality = random.randint(75, 92)
+            quality = random.randint(88, 97)
             cv2.imwrite(img_path, img, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
 
             records.append({
