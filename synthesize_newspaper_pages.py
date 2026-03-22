@@ -10,7 +10,22 @@ import pandas as pd
 from playwright.sync_api import sync_playwright
 
 # --- 1. CONFIGURATION ---
-FONTS = ["'Times New Roman', serif", "'Georgia', serif", "'Palatino Linotype', serif"]
+BODY_FONTS = ["'Times New Roman', serif", "'Georgia', serif", "'Palatino Linotype', serif"]
+
+# Condensed/bold headline fonts — distinct from body, matching historical newspaper style
+HEADLINE_FONTS = [
+    "'Impact', 'Arial Black', sans-serif",
+    "'Arial Black', 'Impact', sans-serif",
+    "'Arial Narrow', 'Arial', sans-serif",
+]
+
+# Target ground-truth character count per page.
+# At 1600x2400 the image costs ~4900 tokens, leaving ~3300 for text within
+# the 8192 cutoff. At ~4 chars/token that's ~13k chars max. With 13-15px font
+# the page holds ~14-18k chars fully packed; targeting 11k leaves natural
+# whitespace (not every page is 100% text) while staying within token budget.
+GT_CHAR_TARGET = 11_000
+GT_CHAR_JITTER = 2_000   # ± random jitter so lengths vary naturally
 
 # Populated by load_corpus() in the main process before workers are forked.
 # Workers inherit these via Linux copy-on-write fork — no redundant loading.
@@ -49,22 +64,23 @@ def load_corpus(path: str = "corpus/wikipedia-nno.parquet") -> None:
 
 # --- 2. ARTICLE SAMPLERS ---
 def get_article() -> tuple[str, str]:
-    """Returns a random article's title and a short sample of its sentences (3–8)."""
+    """Returns a random article's title and a medium sample of its sentences (8–20)."""
     if not articles:
         return "Tittel", "Data mangler."
     article = random.choice(articles)
     sentences = article["sentences"]
-    body = " ".join(random.choices(sentences, k=min(random.randint(3, 8), len(sentences))))
+    k = min(random.randint(8, 20), len(sentences))
+    body = " ".join(random.choices(sentences, k=k))
     return article["title"], body
 
 
 def get_long_article() -> tuple[str, str]:
-    """Returns a title and a large body (20–60 sentences) from one of the longest articles."""
+    """Returns a title and a large body (30–70 sentences) from one of the longest articles."""
     if not long_article_pool:
         return get_article()
     article = random.choice(long_article_pool)
     sentences = article["sentences"]
-    k = min(random.randint(20, 60), len(sentences))
+    k = min(random.randint(30, 70), len(sentences))
     body = " ".join(sentences[:k])
     return article["title"], body
 
@@ -78,48 +94,74 @@ def generate_newspaper_page() -> tuple[str, str]:
     contains the un-hyphenated words because this dataset trains semantic content
     extraction (what does the article say?), not pixel-level glyph transcription.
     If you later need exact glyph-level OCR, remove `hyphens: auto` from h2 styling.
+
+    Content length is controlled by GT_CHAR_TARGET: articles are added in a loop
+    until the ground-truth string reaches the target length. At 1600×2400 the
+    image costs ~4 900 tokens, leaving ~3 300 for text within the 8 192 cutoff.
     """
-    font = random.choice(FONTS)
+    body_font = random.choice(BODY_FONTS)
+    headline_font = random.choice(HEADLINE_FONTS)
     col_count = 6
+
+    # --- Per-page visual style (aged-paper look) ---
+    # Warm cream background, slightly variable per page
+    bg_hue = random.randint(38, 52)
+    bg_sat = random.randint(5, 14)
+    bg_light = random.randint(86, 94)
+    bg_color = f"hsl({bg_hue}, {bg_sat}%, {bg_light}%)"
+
+    # Faded ink — dark gray rather than pure black
+    ink_lightness = random.randint(8, 22)
+    ink_color = f"hsl(0, 0%, {ink_lightness}%)"
+
+    font_size = random.randint(13, 15)
 
     ground_truth: list[str] = []
     html_parts: list[str] = []
 
     masthead = "Norsk Tidende"
     html_parts.append(
-        f"<h1 style='text-align: center; border-bottom: 2px solid black; "
-        f"padding-bottom: 10px; font-family: sans-serif; text-transform: uppercase;'>"
+        f"<h1 style='text-align: center; border-bottom: 2px solid {ink_color}; "
+        f"padding-bottom: 10px; font-family: {headline_font}; text-transform: uppercase; "
+        f"font-size: 28px; letter-spacing: 2px;'>"
         f"{masthead}</h1>"
     )
     ground_truth.append(masthead)
 
     html_parts.append(f"<div class='newspaper-layout' style='column-count: {col_count};'>")
 
-    num_long = random.choice([0, 0, 0, 1, 1, 2])
-    num_short = random.randint(4, 8)
-    article_sources = (
-        [get_long_article() for _ in range(num_long)]
-        + [get_article() for _ in range(num_short)]
-    )
-    random.shuffle(article_sources)
+    # --- Budget-based article filling ---
+    # Alternate between long and short articles; stop when GT reaches target length.
+    target_chars = GT_CHAR_TARGET + random.randint(-GT_CHAR_JITTER, GT_CHAR_JITTER)
+    gt_chars = sum(len(s) for s in ground_truth)
+    long_prob = 0.20   # 20% chance any slot gets a long article
 
-    for title, body in article_sources:
+    while gt_chars < target_chars:
+        if random.random() < long_prob:
+            title, body = get_long_article()
+        else:
+            title, body = get_article()
+
         headline = title.upper()
         html_parts.append(
-            f"<h2 style='font-size: {random.randint(14, 20)}px; margin-top: 14px; "
+            f"<h2 style='font-size: {random.randint(16, 22)}px; margin-top: 14px; "
             f"margin-bottom: 4px; column-span: none; hyphens: auto; "
-            f"-webkit-hyphens: auto; overflow-wrap: break-word;'>{headline}</h2>"
+            f"-webkit-hyphens: auto; overflow-wrap: break-word; "
+            f"font-family: {headline_font}; font-weight: 900; letter-spacing: -0.5px;'>"
+            f"{headline}</h2>"
         )
         ground_truth.append(headline)
 
         byline = f"Av {random.choice(['Ola Nordmann', 'Kari Nilsen', 'Ivar Aasen', 'Hulda Garborg'])}"
-        html_parts.append(f"<p style='font-style: italic; margin: 2px 0 6px;'>{byline}</p>")
+        html_parts.append(f"<p style='font-style: italic; margin: 2px 0 6px; font-size: {font_size - 1}px;'>{byline}</p>")
         ground_truth.append(byline)
 
-        html_parts.append(f"<p style='text-align: justify; margin: 0 0 8px;'>{body}</p>")
+        html_parts.append(f"<p style='text-align: justify; margin: 0 0 8px; letter-spacing: -0.2px;'>{body}</p>")
         ground_truth.append(body)
 
-        html_parts.append("<hr style='margin: 10px 0; border: none; border-top: 1px solid #555;'>")
+        html_parts.append("<hr style='margin: 10px 0; border: none; border-top: 1px solid #888;'>")
+
+        gt_chars += len(headline) + len(byline) + len(body)
 
     html_parts.append("</div>")
 
@@ -127,13 +169,13 @@ def generate_newspaper_page() -> tuple[str, str]:
     <html lang="nn">
     <head>
     <style>
-        body {{ width: 1200px; min-height: 1600px; background: #fdfdfc; padding: 40px; color: #111; }}
+        body {{ width: 1540px; min-height: 2340px; background: {bg_color}; padding: 30px; color: {ink_color}; }}
         .newspaper-layout {{
-            column-gap: 20px;
-            column-rule: 1px solid #333;
-            font-family: {font};
-            font-size: {random.randint(11, 14)}px;
-            line-height: 1.4;
+            column-gap: 16px;
+            column-rule: 1px solid #888;
+            font-family: {body_font};
+            font-size: {font_size}px;
+            line-height: 1.35;
         }}
     </style>
     </head>
@@ -147,20 +189,64 @@ def generate_newspaper_page() -> tuple[str, str]:
 
 
 # --- 4. DEGRADATION ENGINE ---
+def _paper_grain(shape: tuple, scale: int = 4) -> np.ndarray:
+    """Generate low-frequency paper grain by upscaling small random noise.
+
+    scale controls the spatial frequency: higher = coarser grain / blotches.
+    """
+    h, w = shape[:2]
+    small = np.random.normal(0, 1, (h // scale + 1, w // scale + 1)).astype(np.float32)
+    grain = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+    return grain
+
+
+def _vignette(shape: tuple, strength: float) -> np.ndarray:
+    """Build a radial darkening mask (1 = centre, 1-strength = corners)."""
+    h, w = shape[:2]
+    cy, cx = h / 2, w / 2
+    Y, X = np.ogrid[:h, :w]
+    # Normalise distance to [0, 1] across the diagonal half-length
+    dist = np.sqrt(((X - cx) / cx) ** 2 + ((Y - cy) / cy) ** 2)
+    # Smoothstep-ish fall-off
+    mask = 1.0 - strength * np.clip(dist - 0.4, 0, 1) / 0.6
+    return mask.astype(np.float32)
+
+
 def degrade_image(img: np.ndarray) -> np.ndarray:
-    """Applies very mild noise and compression artifacts in memory (no disk I/O)."""
+    """Simulate aged-newspaper scan degradation.
+
+    Pipeline (all parameters randomised per image):
+      1. Convert to grayscale (scans are mono; keeps file size small).
+      2. Apply paper grain (coarse low-frequency texture).
+      3. Apply pixel-level noise (scanner grain / film grain).
+      4. Apply Gaussian blur (optical softness of scanner lens + aged paper).
+      5. Apply vignette (scanner light fall-off toward edges).
+      6. Clip and return uint8.
+    """
+    # 1. Grayscale
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+
+    # 2. Paper grain — coarse texture, intensity 3–10
+    grain_intensity = random.uniform(3.0, 10.0)
+    grain_scale = random.choice([3, 4, 5])
+    gray += _paper_grain(gray.shape, scale=grain_scale) * grain_intensity
+
+    # 3. Pixel-level noise — simulates scanner sensor noise, intensity 4–14
+    noise_intensity = random.uniform(4.0, 14.0)
+    gray += np.random.normal(0, noise_intensity, gray.shape).astype(np.float32)
+
+    # 4. Gaussian blur — softens character edges; σ 0.5–1.4
+    sigma = random.uniform(0.5, 1.4)
+    ksize = 3 if sigma < 1.0 else 5
+    gray = cv2.GaussianBlur(gray, (ksize, ksize), sigma)
+
+    # 5. Vignette — darken toward corners, strength 0.05–0.20
     if random.random() > 0.3:
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        v_strength = random.uniform(0.05, 0.20)
+        gray *= _vignette(gray.shape, v_strength)
 
-    noise_intensity = random.uniform(1, 4)
-    noise = np.random.normal(0, noise_intensity, img.shape)
-    img = np.clip(img.astype(np.int16) + noise, 0, 255).astype(np.uint8)
-
-    if random.random() > 0.4:
-        img = cv2.GaussianBlur(img, (3, 3), random.uniform(0.3, 0.7))
-
-    return img
+    gray = np.clip(gray, 0, 255).astype(np.uint8)
+    return gray
 
 
 # --- 5. WORKER ---
@@ -185,7 +271,7 @@ def _worker(worker_id: int, indices: list[int], output_dir: str, images_dir: str
         browser = p.chromium.launch()
 
         def new_page():
-            return browser.new_page(viewport={"width": 1280, "height": 1800})
+            return browser.new_page(viewport={"width": 1600, "height": 2400})
 
         page = new_page()
 
@@ -205,7 +291,8 @@ def _worker(worker_id: int, indices: list[int], output_dir: str, images_dir: str
             img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
             img = degrade_image(img)
 
-            quality = random.randint(85, 97)
+            # Lower quality floor to introduce compression artifacts typical of re-saved scans
+            quality = random.randint(75, 92)
             cv2.imwrite(img_path, img, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
 
             records.append({
@@ -306,4 +393,13 @@ def generate_dataset(
 
 
 if __name__ == "__main__":
-    generate_dataset(num_samples=5)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Generate synthetic newspaper training data.")
+    parser.add_argument("--num-samples", type=int, default=5,
+                        help="Number of samples to generate (default: 5).")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Random seed for reproducibility.")
+    args = parser.parse_args()
+
+    generate_dataset(num_samples=args.num_samples, seed=args.seed)

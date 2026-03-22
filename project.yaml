@@ -1,0 +1,30 @@
+# GLM-OCR Norwegian Nynorsk — project state
+# Update this file whenever a new model is finetuned.
+
+models:
+  base:
+    path: /home/lars/.cache/huggingface/hub/models--zai-org--GLM-OCR/snapshots/1c97a901048aa616cf401d6b569d746f2fb85d88
+    hf_repo: zai-org/GLM-OCR
+
+  current_finetuned:
+    path: LLaMA-Factory/saves/glm-ocr-nynorsk/full/sft
+    base_model: zai-org/GLM-OCR
+    base_model_snapshot: 1c97a901048aa616cf401d6b569d746f2fb85d88
+    training_date: "2026-03-20"
+    purpose: Norwegian Nynorsk OCR — full SFT on synthetic newspaper pages
+    method: >
+      Full parameter SFT of the language model only.
+      Vision tower and multi-modal projector were frozen.
+    num_samples: 20000
+    epochs: 3
+    training_time: "7:22:19"
+    learning_rate: 1.0e-5
+    lr_scheduler: cosine
+    batch_size_effective: 16  # 4 per device × 4 gradient accumulation steps
+    data:
+      dataset_key: nynorsk_synthetic
+      file: finetune-data/synthetic/train.json
+      description: >
+        Synthetic newspaper-style pages rendered in Norwegian Nynorsk,
+        generated from the Norwegian Nynorsk Wikipedia corpus.
+    config: training/config/glm_ocr_nynorsk_full.yaml

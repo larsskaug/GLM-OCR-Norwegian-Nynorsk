@@ -11,9 +11,9 @@ freeze_multi_modal_projector: true
 freeze_language_model: false
 
 ### dataset
-dataset: glm_ocr_nynorsk
+dataset: glm_ocr_nynorsk,nynorsk_text
 template: glm_ocr
-cutoff_len: 2048
+cutoff_len: 8192
 preprocessing_num_workers: 16
 dataloader_num_workers: 4
 
@@ -27,8 +27,8 @@ save_only_model: false
 report_to: none
 
 ### train
-per_device_train_batch_size: 4
-gradient_accumulation_steps: 4
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 16
 learning_rate: 1.0e-5
 num_train_epochs: 3
 lr_scheduler_type: cosine

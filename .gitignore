@@ -15,6 +15,15 @@ evaluation/
 LLaMA-Factory/
 training/logs/
 
+# Generated output
+stitching_prompt_output.txt
+stitching_prompt_json_output.txt
+stitching_json_output.json
+
+# Scans (large binaries)
+scans/raw/
+scans/ready-for-ocr/
+
 # Misc
 *.log
 .env
